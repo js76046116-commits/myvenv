@@ -5,4 +5,4 @@ langchain-community
 sentence-transformers
 chromadb
 tqdm
-rank_bm25  <-- 이거 추가!
+rank_bm25 
