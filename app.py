@@ -186,7 +186,7 @@ def retrieve_and_rerank(query, top_k=5):
     scored_docs = sorted(zip(initial_docs, scores), key=lambda x: x[1], reverse=True)
     return [doc for doc, score in scored_docs[:top_k]]
 
-# [핵심 수정] 도면 분석 함수: 시공/품질/안전 관리 관점으로 전면 변경
+# [핵심] 도면 분석 함수: 시공/품질/안전 관리 관점
 def analyze_drawing_deep(image_base64, query, retrieved_docs):
     # DB에서 찾아온 시방서/지침 내용 합치기
     laws_text = "\n".join([f"- {d.page_content}" for d in retrieved_docs])
@@ -244,7 +244,7 @@ if "last_processed_file" not in st.session_state:
     st.session_state.last_processed_file = None
 if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
-if "current_image_base64" not in st.session_state: # 마지막 페이지 이미지 저장용
+if "current_image_base64" not in st.session_state: 
     st.session_state.current_image_base64 = None
 
 with st.sidebar:
@@ -252,7 +252,7 @@ with st.sidebar:
     st.info("💡 PDF를 넣으면 **전체 페이지**를 시공/품질 관점으로 분석합니다.")
     uploaded_files = st.file_uploader("검토할 도면 PDF를 선택하세요", type=["pdf"], accept_multiple_files=True)
 
-# --- [B] 자동 분석 (다중 페이지 처리) ---
+# --- [B] 자동 분석 (다중 페이지 전체 분석) ---
 if uploaded_files:
     target_file = uploaded_files[0]
     
@@ -267,14 +267,14 @@ if uploaded_files:
                 tmp_file.write(target_file.read())
                 tmp_path = tmp_file.name
             try:
-                # 전체 페이지 변환
+                # [핵심] 옵션 없이 호출하면 전체 페이지 변환됨
                 all_pages = convert_from_path(tmp_path, poppler_path=POPPLER_PATH)
-                status.write(f"✅ 총 {len(all_pages)}장의 도면을 확인했습니다. 분석을 시작합니다.")
+                status.write(f"✅ 총 {len(all_pages)}장의 도면을 확인했습니다. 전체 분석을 시작합니다.")
             except Exception as e:
                 st.error(f"이미지 변환 오류: {e}")
                 st.stop()
         
-        # 2. 페이지별 순차 분석
+        # 2. 페이지별 순차 반복 분석 (Loop)
         full_report = f"### 🏗️ 도면 시공 품질/안전 분석 결과 (총 {len(all_pages)}장)\n**분석 대상:** {target_file.name}\n\n"
         progress_bar = st.progress(0)
         
@@ -295,7 +295,7 @@ if uploaded_files:
             # 마지막 페이지 이미지는 질문용으로 세션에 저장
             st.session_state.current_image_base64 = img_base64
             
-            # [수정] 자동 질문: 법규가 아닌 '품질/안전/하자' 관점으로 변경
+            # [수정] 자동 질문: 품질/안전/하자 관점
             auto_query = """
             이 도면을 실제 시공할 때 유의해야 할 '품질 관리', '안전 사고 예방', '하자 방지' 사항을 검토해줘.
             특히 콘크리트 타설, 마감 공사, 단열/방수 시공 시 LH 전문 시방서 및 건설관리 지침에 따라 주의할 점을 알려줘.
@@ -343,7 +343,7 @@ if prompt := st.chat_input("추가 질문이 있으신가요? (예: 창호 주�
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        # 이미지가 있는 경우 (방금 도면을 분석한 경우)
+        # 이미지가 있는 경우
         if st.session_state.current_image_base64:
             with st.status("🔍 도면과 시방서를 복합 분석 중...", expanded=True) as status:
                 st.write("📚 관련 시방서/지침 검색 중...")
@@ -358,7 +358,7 @@ if prompt := st.chat_input("추가 질문이 있으신가요? (예: 창호 주�
             st.markdown(final_res)
             st.session_state.messages.append({"role": "assistant", "content": final_res})
         
-        # 이미지가 없는 경우 (일반 텍스트 질문)
+        # 이미지가 없는 경우
         else:
             corrected = spacing_chain.invoke({"question": prompt})
             response = rag_chain.invoke(corrected)
