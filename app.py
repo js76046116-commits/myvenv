@@ -137,20 +137,22 @@ with st.spinner("🚀 AI 통합 엔진(Text+Vision) 시동 중..."):
         st.error(f"시스템 로딩 중 오류 발생: {e}")
         st.stop()
 
-# [수정 3] LLM 모델명 수정 (정확한 버전 명시)
-# 텍스트용: 1.5 Flash 최신 버전 사용
+# ... (위쪽 코드는 그대로)
+
+# [수정] 로그에 있는 '생존 모델(2.5)'로 변경
 llm_text = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash", 
+    model="models/gemini-2.5-flash",  # 1.5는 죽었습니다. 2.5로 갑니다.
     temperature=0,
     google_api_key=GOOGLE_API_KEY
 )
 
-# 비전용: 1.5 Flash 최신 버전 사용 (이미지 인식 가능)
 llm_vision = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash", 
+    model="models/gemini-2.5-flash",  # 1.5는 죽었습니다. 2.5로 갑니다.
     temperature=0,
     google_api_key=GOOGLE_API_KEY
 )
+
+# ... (아래쪽 코드는 그대로)
 
 # ==========================================================
 # [2] 로직 체인
