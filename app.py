@@ -22,7 +22,7 @@ from langchain_core.messages import HumanMessage
 # ==========================================================
 # [0] 기본 설정 및 상수 정의
 # ==========================================================
-st.set_page_config(page_title="건설 CM AI 통합 솔루션 (Deep RAG)", page_icon="🏗️", layout="wide")
+st.set_page_config(page_title="건설 CM AI 통합 솔루션 (종합보고서)", page_icon="🏗️", layout="wide")
 
 # 1. API 키 가져오기
 if "GOOGLE_API_KEY" in st.secrets:
@@ -35,10 +35,10 @@ else:
 
 os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 
-# 2. Poppler 경로 (Windows 환경 대응)
+# 2. Poppler 경로
 system_name = platform.system()
 if system_name == "Windows":
-    # 사용자의 로컬 환경 경로
+    # 사용자 환경에 맞는 경로로 설정되어 있음
     POPPLER_PATH = r"C:\Users\owner\myvenv\Release-25.12.0-0\poppler-25.12.0\Library\bin"
 else:
     POPPLER_PATH = None 
@@ -53,10 +53,9 @@ RAW_DATA = []
 MODEL_NAME = "models/gemini-2.5-flash" 
 
 # ==========================================================
-# [1] 시스템 로딩 (검색 엔진 & 모델)
+# [1] 시스템 로딩
 # ==========================================================
 class SimpleHybridRetriever:
-    """BM25(키워드) + Chroma(벡터) 결합 검색기"""
     def __init__(self, bm25, chroma1, chroma2, raw_data):
         self.bm25 = bm25
         self.chroma1 = chroma1
@@ -64,12 +63,10 @@ class SimpleHybridRetriever:
         self.raw_data = raw_data
         
     def invoke(self, query):
-        # 1. 병렬 검색 수행
         docs_bm25 = self.bm25.invoke(query)
         docs_c1 = self.chroma1.invoke(query)
         docs_c2 = self.chroma2.invoke(query)
         
-        # 2. Chroma 결과 복원 (인덱스 -> 원본 텍스트)
         real_docs_chroma = []
         for doc in (docs_c1 + docs_c2):
             try:
@@ -84,15 +81,14 @@ class SimpleHybridRetriever:
             except:
                 continue
 
-        # 3. 결과 통합 및 중복 제거
         combined = []
         seen_ids = set()
         for d in itertools.chain(docs_bm25, real_docs_chroma):
-            key = d.page_content[:30] # 내용 앞부분으로 중복 체크
+            key = d.page_content[:30]
             if key not in seen_ids:
                 combined.append(d)
                 seen_ids.add(key)
-        return combined[:200] # 1차적으로 넉넉하게 반환
+        return combined[:200]
 
 @st.cache_resource
 def load_search_system():
@@ -126,260 +122,245 @@ def load_search_system():
     bm25_retriever = BM25Retriever.from_documents(docs)
     bm25_retriever.k = 150
     hybrid_retriever = SimpleHybridRetriever(bm25_retriever, retriever1, retriever2, RAW_DATA)
-    
-    # Cross-Encoder (Reranker) 로드
     reranker = CrossEncoder("cross-encoder/ms-marco-TinyBERT-L-2-v2", model_kwargs={"dtype": "auto"})
 
     return hybrid_retriever, reranker
 
-with st.spinner("🚀 AI 5단계 심층 검색 엔진 시동 중..."):
+with st.spinner("🚀 AI 엔진 시동 중..."):
     try:
         hybrid_retriever, reranker_model = load_search_system()
     except Exception as e:
         st.error(f"시스템 로딩 실패: {e}")
         st.stop()
 
-# LLM 초기화
-safety_settings = {HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE}
-llm_text = ChatGoogleGenerativeAI(model=MODEL_NAME, temperature=0.1, google_api_key=GOOGLE_API_KEY, safety_settings=safety_settings)
+# 안전 설정 (건설 현장 사진 차단 방지)
+safety_settings = {
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+}
+
+llm_text = ChatGoogleGenerativeAI(model=MODEL_NAME, temperature=0, google_api_key=GOOGLE_API_KEY, safety_settings=safety_settings)
 llm_vision = ChatGoogleGenerativeAI(model=MODEL_NAME, temperature=0, google_api_key=GOOGLE_API_KEY, safety_settings=safety_settings)
 
 # ==========================================================
-# [2] Deep RAG 파이프라인 (5단계 로직 구현)
+# [2] 분석 로직 (페이지 분석 -> 종합 리포트)
 # ==========================================================
+spacing_chain = ChatPromptTemplate.from_template("교정된 한국어 문장만 출력(설명X): {question}").pipe(llm_text).pipe(StrOutputParser())
 
-# (1) 쿼리 확장 (Query Expansion)
-expansion_prompt = ChatPromptTemplate.from_template("""
-당신은 건설/건축 검색 최적화 AI입니다.
-사용자 질문을 분석하여 검색 정확도를 높일 수 있는 **'확장 검색어'** 3개를 생성하세요.
-건설 표준 시방서, 법규 용어, 동의어를 포함해야 합니다.
-
-[사용자 질문]: {question}
-
-[출력 형식]: 질문 | 키워드1, 키워드2, 키워드3
-(설명 없이 위 형식으로만 출력하세요)
-""")
-expansion_chain = expansion_prompt | llm_text | StrOutputParser()
-
-def get_expanded_queries(original_query):
-    """(1단계) 사용자 질문을 확장하여 리스트로 반환"""
-    try:
-        expanded_str = expansion_chain.invoke({"question": original_query})
-        if "|" in expanded_str:
-            base, keywords = expanded_str.split("|", 1)
-            queries = [base.strip()] + [k.strip() for k in keywords.split(",")]
-        else:
-            queries = [original_query]
-        return queries[:4] # 최대 4개까지만 사용 (속도 조절)
-    except:
-        return [original_query]
-
-# (2)~(4) 하이브리드 검색 + 재순위화 + Top-K 필터링
-def retrieve_and_rerank(query, top_k=50):
-    # Step 1: 쿼리 확장
-    expanded_queries = get_expanded_queries(query)
-    # st.sidebar.write(f"🔍 확장 쿼리: {expanded_queries}") # 디버깅용
-    
-    # Step 2: 하이브리드 검색 (확장된 쿼리 각각 수행)
-    all_docs = []
-    seen_contents = set()
-    
-    for q in expanded_queries:
-        docs = hybrid_retriever.invoke(q)
-        for doc in docs:
-            if doc.page_content not in seen_contents:
-                all_docs.append(doc)
-                seen_contents.add(doc.page_content)
-    
-    if not all_docs: return []
-
-    # Step 3: 정밀 재순위화 (Cross-Encoder)
-    # 원본 질문(query)과 검색된 문서 간의 점수 계산
-    pairs = [[query, doc.page_content] for doc in all_docs]
+def retrieve_and_rerank(query, top_k=5):
+    initial_docs = hybrid_retriever.invoke(query)
+    if not initial_docs: return []
+    pairs = [[query, doc.page_content] for doc in initial_docs]
     scores = []
-    batch_size = 32
-    
+    batch_size = 16
     for i in range(0, len(pairs), batch_size):
         batch = pairs[i : i + batch_size]
         batch_scores = reranker_model.predict(batch)
         scores.extend(batch_scores)
-    
-    scored_docs = sorted(zip(all_docs, scores), key=lambda x: x[1], reverse=True)
-    
-    # Step 4: Top-K 필터링 (Top-50)
-    final_top_k = [doc for doc, score in scored_docs[:top_k]]
-    return final_top_k
+    scored_docs = sorted(zip(initial_docs, scores), key=lambda x: x[1], reverse=True)
+    return [doc for doc, score in scored_docs[:top_k]]
 
-# (5) 답변 생성 (유연한 프롬프트)
-spacing_chain = ChatPromptTemplate.from_template("교정된 한국어 문장만 출력(설명X): {question}").pipe(llm_text).pipe(StrOutputParser())
-
-answer_prompt = ChatPromptTemplate.from_messages([
-    ("system", """
-    당신은 베테랑 건설 사업 관리자(CM)이자 시공 기술사입니다.
-    사용자의 질문에 대해 아래 [Context](검색된 법규/시방서)를 참고하여 답변해야 합니다.
-
-    [답변 규칙]
-    1. **우선 순위:** [Context]에 구체적인 절차나 기준이 있다면 반드시 그것을 근거로 답변하세요.
-    2. **일반 지식 활용:** 만약 [Context]에 '해결 방안'이나 '구체적 공법'이 부족하다면, 
-       **"제공된 법규 데이터에는 구체적 방법이 명시되지 않았으나, 일반적인 시공 기준에 따르면..."** 이라고 언급한 뒤, 당신이 알고 있는 **표준 시방서 및 공학적 지식**을 동원해 해결책을 제시하세요.
-    3. 절대 "모른다"고 끝내지 말고, 실무적인 조언을 제공하세요.
-    4. 출처가 있다면 [출처: ...] 형태로 명시하세요.
-
-    [Context]
-    {context}
-    """),
-    ("human", "질문: {question}")
-])
-
-def format_docs(docs):
-    return "\n\n".join([f"<출처: {d.metadata.get('source')} / {d.metadata.get('article')}>\n{d.page_content}" for d in docs])
-
-# 최종 RAG 체인 (Top-50 적용)
-rag_chain = (
-    {"context": RunnableLambda(lambda x: retrieve_and_rerank(x, top_k=50)) | format_docs, "question": RunnablePassthrough()}
-    | answer_prompt | llm_text | StrOutputParser()
-)
-
-# ==========================================================
-# [3] Vision AI (도면 분석용)
-# ==========================================================
+# [A] 페이지별 정밀 진단 (Vision)
 def analyze_page_detail(image_base64, query, retrieved_docs):
-    laws_text = "\n".join([f"- {d.page_content[:200]}..." for d in retrieved_docs])
+    laws_text = "\n".join([f"- {d.page_content}" for d in retrieved_docs])
     if not laws_text.strip():
-        laws_text = "(일반 시공 지식 기반)"
+        laws_text = "(검색된 관련 시방서가 없습니다. 일반적인 시공 지식을 바탕으로 분석합니다.)"
 
     prompt_text = f"""
-    당신은 건설 시공 품질/안전 전문가입니다.
+    당신은 건설 현장의 **시공 품질 및 안전 관리 전문가(Construction CM Expert)**입니다.
+    
     [검토 요청] {query}
     [참고 기준] {laws_text}
     
-    도면 이미지를 정밀 분석하여 품질 문제(균열, 누수 등)와 안전 위험을 찾아내세요.
+    [지시사항]
+    1. 도면을 정밀하게 보고 시공 시 발생 가능한 **품질 문제(균열, 누수, 결로)**와 **안전 위험(추락, 전도)**을 찾아내세요.
+    2. 반드시 위 [참고 기준]의 시방서 내용을 근거로 지적하세요.
+    3. **메모 형식**으로 핵심만 간단히 작성하세요. (나중에 종합할 것입니다.)
     """
     
     message = HumanMessage(content=[
         {"type": "text", "text": prompt_text},
         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}},
     ])
+    
     try:
         response = llm_vision.invoke([message])
-        return response.content
-    except:
-        return "분석 불가"
+        return response.content if response.content else "특이사항 없음."
+    except Exception as e:
+        return f"분석 오류: {str(e)}"
 
+# [B] 종합 보고서 작성 (Text summarization)
 def generate_final_report(file_name, page_results):
+    # 페이지별 결과를 하나의 텍스트로 합침
     raw_data = ""
     for item in page_results:
-        raw_data += f"\n[Page {item['page']}]: {item['content']}\n"
+        raw_data += f"\n[Page {item['page']} 진단내용]:\n{item['content']}\n"
     
     prompt = f"""
     당신은 건설사업관리단장(CM단장)입니다.
-    '{file_name}' 도면의 페이지별 분석 내용을 종합하여 **최종 시공 품질/안전 검토 보고서**를 작성하세요.
-    중복된 내용은 통합하고, 핵심 이슈 위주로 요약하세요.
-    
-    [분석 데이터]
+    각 페이지별 담당자가 보고한 내용을 바탕으로 **'{file_name}'에 대한 최종 시공 품질/안전 검토 보고서**를 작성하세요.
+
+    [담당자 보고 내용 합본]
     {raw_data}
+
+    [보고서 작성 규칙]
+    1. **중복 통합:** 여러 페이지에서 반복되는 지적 사항은 하나로 합쳐서 강력하게 권고하세요.
+    2. **구조화된 목차:**
+       # 🏗️ [종합] 시공 품질 및 안전 검토 보고서
+       ## 1. 총평 (Executive Summary)
+       ## 2. 주요 시공 관리 포인트 (LH 시방서 기준)
+          - 품질 관리 (균열, 방수, 단열 등)
+          - 안전 관리 (추락, 낙하, 장비 등)
+       ## 3. 페이지별 특이사항 (Issues by Page)
+          - (문제가 발견된 페이지만 요약하여 기재)
+    3. **톤앤매너:** 전문적이고 단호한 어조를 사용하세요.
     """
     return llm_text.invoke(prompt).content
 
-# ==========================================================
-# [4] 웹 UI (Streamlit)
-# ==========================================================
-st.title("🏗️ 건설 CM 전문 AI (Deep RAG + Vision)")
+answer_prompt = ChatPromptTemplate.from_messages([
+    ("system", "건설 기준 엔지니어입니다. [Context]를 보고 답변하세요.\n[Context]\n{context}"),
+    ("human", "질문: {question}")
+])
 
-# 세션 상태 관리
+def format_docs(docs):
+    return "\n\n".join([f"<출처: {d.metadata.get('source')} / {d.metadata.get('article')}>\n{d.page_content}" for d in docs])
+
+rag_chain = (
+    {"context": RunnableLambda(lambda x: retrieve_and_rerank(x, top_k=10)) | format_docs, "question": RunnablePassthrough()}
+    | answer_prompt | llm_text | StrOutputParser()
+)
+
+# ==========================================================
+# [3] 웹 UI 구성
+# ==========================================================
+st.title("🏗️ 건설 CM 전문 AI (시공 품질/안전 종합분석)")
+
+# 세션 상태 초기화
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "processed_files" not in st.session_state:
-    st.session_state.processed_files = set()
+    st.session_state.processed_files = set() # 처리한 파일 기억장소
 if "current_image_base64" not in st.session_state:
     st.session_state.current_image_base64 = None
 
-# --- [사이드바] 파일 업로드 및 모드 설정 ---
+# --- [A] 사이드바 ---
 with st.sidebar:
     st.header("📂 도면 투입구")
-    uploaded_files = st.file_uploader("PDF 도면 업로드", type=["pdf"], accept_multiple_files=True)
-    
-    # [설정] 질문 모드 (2x2 매트릭스 대응)
+    st.info("💡 PDF를 업로드하면 **전체 페이지를 분석하여 하나의 종합 보고서**를 만듭니다.")
+    uploaded_files = st.file_uploader("검토할 도면 PDF", type=["pdf"], accept_multiple_files=True)
+
+    # ---------------------------------------------------------
+    # [수정됨] 도면이 처리된 경우에만 '질문 모드' 선택 버튼 활성화
+    # ---------------------------------------------------------
     search_mode = "⚖️ 일반 법규 검색" # 기본값
-    if st.session_state.processed_files:
+
+    if st.session_state.processed_files: # 파일이 하나라도 처리되었다면
         st.markdown("---")
-        st.subheader("🤖 질문 모드")
+        st.subheader("🤖 질문 모드 설정")
         search_mode = st.radio(
-            "모드 선택",
+            "어떤 모드로 질문하시겠습니까?",
             ["📂 도면 기반 질문", "⚖️ 일반 법규 검색"],
             index=0,
-            help="도면 기반: 보고 있는 도면 내용 참고\n법규 검색: 도면 무시하고 법규 DB만 검색"
+            help="📂 도면 기반: 업로드한 도면의 내용을 보며 답변합니다.\n⚖️ 일반 법규: 도면 상관없이 건축 법규 DB에서만 검색합니다."
         )
 
-# --- [메인] 도면 처리 로직 ---
+# --- [B] 자동 분석 로직 (순차 처리 + 종합) ---
 if uploaded_files:
     for target_file in uploaded_files:
+        # 이미 처리한 파일은 건너뜀 (중복 분석 방지)
         if target_file.name not in st.session_state.processed_files:
-            with st.status(f"📄 '{target_file.name}' 분석 중...", expanded=True) as status:
-                # 1. PDF 변환
+            
+            # 1. 파일 변환 알림
+            with st.status(f"📄 '{target_file.name}' 도면 스캔 중...", expanded=True) as status:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
                     tmp_file.write(target_file.read())
                     tmp_path = tmp_file.name
                 
                 try:
                     all_pages = convert_from_path(tmp_path, poppler_path=POPPLER_PATH)
+                    status.write(f"✅ 총 {len(all_pages)}페이지 변환 완료. 정밀 진단 시작...")
                 except Exception as e:
-                    st.error(f"변환 오류: {e}")
+                    st.error(f"변환 실패: {e}")
                     continue
 
-                # 2. Vision 분석 루프
+                # 2. 페이지별 루프 (Vision Analysis)
                 page_results = []
-                progress = st.progress(0)
+                progress_bar = st.progress(0)
+                
                 for i, page_img in enumerate(all_pages):
-                    progress.progress((i+1)/len(all_pages), text=f"🔍 Page {i+1} 정밀 진단 중...")
+                    page_num = i + 1
+                    progress_text = f"🔍 Page {page_num}/{len(all_pages)} 정밀 분석 중... (시방서 대조)"
+                    progress_bar.progress((i + 1) / len(all_pages), text=progress_text)
                     
-                    # 이미지 base64 변환
+                    # 이미지 인코딩
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_img:
                         page_img.save(tmp_img.name, "JPEG")
                         with open(tmp_img.name, "rb") as f:
                             img_base64 = base64.b64encode(f.read()).decode("utf-8")
                     
-                    st.session_state.current_image_base64 = img_base64 # 최신 이미지 저장
+                    # 가장 최근 본 이미지 저장 (추가 질문용)
+                    st.session_state.current_image_base64 = img_base64
                     
-                    # 분석 실행
-                    res = analyze_page_detail(img_base64, "위험 요소 식별", [])
-                    page_results.append({"page": i+1, "content": res})
+                    # 개별 페이지 분석
+                    query = "이 도면의 시공 품질 및 안전 위험 요소를 찾아줘."
+                    retrieved_docs = retrieve_and_rerank(query, top_k=3)
+                    result = analyze_page_detail(img_base64, query, retrieved_docs)
+                    
+                    # 결과 메모
+                    page_results.append({"page": page_num, "content": result})
+
+                # 3. 종합 보고서 작성 (Consolidation)
+                status.write("📝 페이지별 진단 완료. 종합 보고서 작성 중...")
+                final_report = generate_final_report(target_file.name, page_results)
                 
-                # 3. 종합 보고서
-                status.write("📝 종합 보고서 작성 중...")
-                report = generate_final_report(target_file.name, page_results)
-                
+                # 4. 결과 저장 및 출력
                 st.session_state.processed_files.add(target_file.name)
-                st.session_state.messages.append({"role": "assistant", "content": report})
-                progress.empty()
-                status.update(label="분석 완료", state="complete")
+                st.session_state.messages.append({"role": "assistant", "content": final_report})
+                
+                progress_bar.empty()
+                status.update(label=f"✅ '{target_file.name}' 분석 완료!", state="complete")
 
-# --- [채팅창] ---
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+# --- [C] 채팅창 표시 ---
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
+# --- [D] 사용자 질문 ---
 if prompt := st.chat_input("질문을 입력하세요..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        # [분기 로직] 도면 모드 vs 법규 모드
+        # ---------------------------------------------------------
+        # [수정됨] 모드 선택에 따른 로직 분기 (2x2 매트릭스 적용)
+        # ---------------------------------------------------------
+        
+        # Case 1: [도면 기반 질문] 모드이고 + 이미지가 메모리에 있을 때
         if search_mode == "📂 도면 기반 질문" and st.session_state.current_image_base64:
-            with st.status("🔍 도면 재검토 및 Vision 분석 중...", expanded=True):
-                # Vision AI 호출
-                msg = HumanMessage(content=[
-                    {"type": "text", "text": f"질문: {prompt}\n(이전 분석 맥락 참고)"},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{st.session_state.current_image_base64}"}}
+            with st.status("🔍 도면 재검토 및 답변 중...", expanded=True):
+                retrieved_docs = retrieve_and_rerank(prompt, top_k=5)
+                # Vision AI에게 다시 물어봄
+                prompt_text = f"사용자 질문: {prompt}\n(이전 분석 맥락을 참고하여 답변하세요.)"
+                message = HumanMessage(content=[
+                    {"type": "text", "text": prompt_text},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{st.session_state.current_image_base64}"}},
                 ])
-                response = llm_vision.invoke([msg]).content
-                st.markdown(response)
-                st.session_state.messages.append({"role": "assistant", "content": response})
+                response = llm_vision.invoke([message]).content
+            
+            # 근거 자료 표시
+            refs = "\n\n[관련 근거]: " + ", ".join([d.metadata.get('article', '출처미상') for d in retrieved_docs])
+            final_res = response + refs
+            st.markdown(final_res)
+            st.session_state.messages.append({"role": "assistant", "content": final_res})
+        
+        # Case 2: [일반 법규 검색] 모드이거나 OR 이미지가 없을 때
         else:
-            # Deep RAG (5단계) 호출
-            with st.status("🧠 5단계 심층 검색 중 (확장-검색-재순위화)...", expanded=True):
-                corrected_query = spacing_chain.invoke({"question": prompt})
-                response = rag_chain.invoke(corrected_query)
-                st.markdown(response)
-                st.session_state.messages.append({"role": "assistant", "content": response})
+            # 도면이 있어도 '일반 법규 검색' 모드라면 여기로 들어옵니다.
+            mode_msg = "📖 법규 DB 검색 중..." if search_mode == "⚖️ 일반 법규 검색" else "💬 답변 생성 중..."
+            
+            with st.status(mode_msg, expanded=True):
+                corrected = spacing_chain.invoke({"question": prompt})
+                response = rag_chain.invoke(corrected)
+            
+            st.markdown(response)
+            st.session_state.messages.append({"role": "assistant", "content": response})
