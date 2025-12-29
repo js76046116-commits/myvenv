@@ -4,6 +4,7 @@ import json
 import itertools
 import base64
 import tempfile
+import platform  # [핵심] 운영체제 감지용 라이브러리
 from pdf2image import convert_from_path
 from sentence_transformers import CrossEncoder 
 
@@ -23,11 +24,20 @@ st.set_page_config(page_title="건설 CM AI 통합 솔루션", page_icon="🏗�
 
 # 1. API 키 (환경변수 또는 직접 입력)
 if "GOOGLE_API_KEY" not in os.environ:
-    # os.environ["GOOGLE_API_KEY"] = "여기에_키를_넣으세요" # 필요시 주석 해제
+    # os.environ["GOOGLE_API_KEY"] = "여기에_키를_넣으세요" # Streamlit Secrets를 쓴다면 주석 유지
     pass
 
-# 2. Poppler 경로 (사용자 로컬 경로)
-POPPLER_PATH = r"C:\Users\owner\myvenv\Release-25.12.0-0\poppler-25.12.0\Library\bin"
+# 2. Poppler 경로 설정 (자동 감지 로직)
+# [중요] 윈도우와 리눅스(서버)를 구분하여 경로를 설정합니다.
+system_name = platform.system()
+
+if system_name == "Windows":
+    # 사용자 로컬 컴퓨터용 경로
+    POPPLER_PATH = r"C:\Users\owner\myvenv\Release-25.12.0-0\poppler-25.12.0\Library\bin"
+else:
+    # Streamlit Cloud (Linux) 서버용 
+    # packages.txt를 통해 설치된 poppler-utils는 시스템 PATH에 등록되므로 경로 지정이 필요 없습니다(None).
+    POPPLER_PATH = None 
 
 # 3. 데이터 경로
 DB_PATH_1 = "./chroma_db_part1"
@@ -42,8 +52,8 @@ RAW_DATA = []
 # ==========================================================
 class SimpleHybridRetriever:
     def __init__(self, bm25, chroma1, chroma2, raw_data):
-        self.bm25 = bm25 
-        self.chroma1 = chroma1 
+        self.bm25 = bm25
+        self.chroma1 = chroma1
         self.chroma2 = chroma2
         self.raw_data = raw_data
         
@@ -224,6 +234,7 @@ with st.sidebar:
             
             try:
                 # 1페이지만 변환 (속도 최적화)
+                # [중요] 여기서 위에서 설정한 POPPLER_PATH 변수를 사용합니다.
                 images = convert_from_path(tmp_path, poppler_path=POPPLER_PATH, first_page=1, last_page=1)
                 if images:
                     st.image(images[0], caption="검토 대상 도면", use_container_width=True)
