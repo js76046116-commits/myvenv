@@ -140,14 +140,14 @@ with st.spinner("🚀 AI 통합 엔진(Text+Vision) 시동 중..."):
 # [수정 3] LLM 모델명 수정 (정확한 버전 명시)
 # 텍스트용: 1.5 Flash 최신 버전 사용
 llm_text = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash-001", 
+    model="gemini-1.5-flash", 
     temperature=0,
     google_api_key=GOOGLE_API_KEY
 )
 
 # 비전용: 1.5 Flash 최신 버전 사용 (이미지 인식 가능)
 llm_vision = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash-001", 
+    model="gemini-1.5-flash", 
     temperature=0,
     google_api_key=GOOGLE_API_KEY
 )

@@ -1,9 +1,10 @@
 streamlit
 langchain-chroma
-langchain-google-genai
+langchain-google-genai>=1.0.3
 langchain-community
 sentence-transformers
 chromadb
 rank_bm25
 pdf2image
-pypdf 
+pypdf
+google-generativeai>=0.7.0
