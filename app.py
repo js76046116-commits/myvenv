@@ -38,6 +38,7 @@ os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 # 2. Poppler 경로
 system_name = platform.system()
 if system_name == "Windows":
+    # 사용자 환경에 맞는 경로로 설정되어 있음
     POPPLER_PATH = r"C:\Users\owner\myvenv\Release-25.12.0-0\poppler-25.12.0\Library\bin"
 else:
     POPPLER_PATH = None 
@@ -247,6 +248,21 @@ with st.sidebar:
     st.info("💡 PDF를 업로드하면 **전체 페이지를 분석하여 하나의 종합 보고서**를 만듭니다.")
     uploaded_files = st.file_uploader("검토할 도면 PDF", type=["pdf"], accept_multiple_files=True)
 
+    # ---------------------------------------------------------
+    # [수정됨] 도면이 처리된 경우에만 '질문 모드' 선택 버튼 활성화
+    # ---------------------------------------------------------
+    search_mode = "⚖️ 일반 법규 검색" # 기본값
+
+    if st.session_state.processed_files: # 파일이 하나라도 처리되었다면
+        st.markdown("---")
+        st.subheader("🤖 질문 모드 설정")
+        search_mode = st.radio(
+            "어떤 모드로 질문하시겠습니까?",
+            ["📂 도면 기반 질문", "⚖️ 일반 법규 검색"],
+            index=0,
+            help="📂 도면 기반: 업로드한 도면의 내용을 보며 답변합니다.\n⚖️ 일반 법규: 도면 상관없이 건축 법규 DB에서만 검색합니다."
+        )
+
 # --- [B] 자동 분석 로직 (순차 처리 + 종합) ---
 if uploaded_files:
     for target_file in uploaded_files:
@@ -309,14 +325,18 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # --- [D] 사용자 질문 ---
-if prompt := st.chat_input("보고서 내용에 대해 궁금한 점이 있나요?"):
+if prompt := st.chat_input("질문을 입력하세요..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        # 이미지가 있으면 (방금 분석한 도면 기준)
-        if st.session_state.current_image_base64:
+        # ---------------------------------------------------------
+        # [수정됨] 모드 선택에 따른 로직 분기 (2x2 매트릭스 적용)
+        # ---------------------------------------------------------
+        
+        # Case 1: [도면 기반 질문] 모드이고 + 이미지가 메모리에 있을 때
+        if search_mode == "📂 도면 기반 질문" and st.session_state.current_image_base64:
             with st.status("🔍 도면 재검토 및 답변 중...", expanded=True):
                 retrieved_docs = retrieve_and_rerank(prompt, top_k=5)
                 # Vision AI에게 다시 물어봄
@@ -333,9 +353,14 @@ if prompt := st.chat_input("보고서 내용에 대해 궁금한 점이 있나�
             st.markdown(final_res)
             st.session_state.messages.append({"role": "assistant", "content": final_res})
         
-        # 이미지가 없으면 (일반 텍스트 질문)
+        # Case 2: [일반 법규 검색] 모드이거나 OR 이미지가 없을 때
         else:
-            corrected = spacing_chain.invoke({"question": prompt})
-            response = rag_chain.invoke(corrected)
+            # 도면이 있어도 '일반 법규 검색' 모드라면 여기로 들어옵니다.
+            mode_msg = "📖 법규 DB 검색 중..." if search_mode == "⚖️ 일반 법규 검색" else "💬 답변 생성 중..."
+            
+            with st.status(mode_msg, expanded=True):
+                corrected = spacing_chain.invoke({"question": prompt})
+                response = rag_chain.invoke(corrected)
+            
             st.markdown(response)
             st.session_state.messages.append({"role": "assistant", "content": response})
