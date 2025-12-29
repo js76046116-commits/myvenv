@@ -137,14 +137,17 @@ with st.spinner("🚀 AI 통합 엔진(Text+Vision) 시동 중..."):
         st.error(f"시스템 로딩 중 오류 발생: {e}")
         st.stop()
 
-# [수정 3] LLM에도 API Key 직접 주입
+# [수정 3] LLM 모델명 수정 (정확한 버전 명시)
+# 텍스트용: 1.5 Flash 최신 버전 사용
 llm_text = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash", 
+    model="gemini-1.5-flash-001", 
     temperature=0,
     google_api_key=GOOGLE_API_KEY
 )
+
+# 비전용: 1.5 Flash 최신 버전 사용 (이미지 인식 가능)
 llm_vision = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash", 
+    model="gemini-1.5-flash-001", 
     temperature=0,
     google_api_key=GOOGLE_API_KEY
 )
