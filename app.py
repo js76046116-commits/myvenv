@@ -22,15 +22,17 @@ from langchain_core.messages import HumanMessage
 # ==========================================================
 st.set_page_config(page_title="건설 CM AI 통합 솔루션", page_icon="🏗️", layout="wide")
 
-# 1. API 키 가져오기 (가장 안전한 방법)
-# Secrets에서 가져오되, 없으면 환경변수 확인, 그래도 없으면 에러 처리
+# 1. API 키 가져오기 (Secrets 우선 -> 없으면 에러)
 if "GOOGLE_API_KEY" in st.secrets:
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
 elif "GOOGLE_API_KEY" in os.environ:
     GOOGLE_API_KEY = os.environ["GOOGLE_API_KEY"]
 else:
-    st.error("🚨 치명적 오류: Google API Key를 찾을 수 없습니다. Streamlit Secrets 설정을 확인하세요.")
+    st.error("🚨 치명적 오류: Google API Key가 없습니다. Streamlit Secrets 설정을 확인하세요.")
     st.stop()
+
+# 환경 변수에도 확실히 등록 (이중 안전장치)
+os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 
 # 2. Poppler 경로 (자동 감지)
 system_name = platform.system()
@@ -92,10 +94,10 @@ def load_search_system():
     with open(JSON_DATA_PATH, 'r', encoding='utf-8') as f:
         RAW_DATA = json.load(f)
 
-    # [핵심 수정] API 키를 직접 전달합니다.
+    # [수정 1] API Key 직접 주입하여 ValidationError 방지
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004", 
-        google_api_key=GOOGLE_API_KEY
+        model="models/text-embedding-004",
+        google_api_key=GOOGLE_API_KEY 
     )
     
     if not os.path.exists(DB_PATH_1) or not os.path.exists(DB_PATH_2):
@@ -119,7 +121,12 @@ def load_search_system():
     bm25_retriever.k = 150
 
     hybrid_retriever = SimpleHybridRetriever(bm25_retriever, retriever1, retriever2, RAW_DATA)
-    reranker = CrossEncoder("cross-encoder/ms-marco-TinyBERT-L-2-v2", model_kwargs={"torch_dtype": "auto"})
+    
+    # [수정 2] torch_dtype 경고 해결 (dtype으로 변경)
+    reranker = CrossEncoder(
+        "cross-encoder/ms-marco-TinyBERT-L-2-v2", 
+        model_kwargs={"dtype": "auto"} 
+    )
 
     return hybrid_retriever, reranker
 
@@ -127,18 +134,18 @@ with st.spinner("🚀 AI 통합 엔진(Text+Vision) 시동 중..."):
     try:
         hybrid_retriever, reranker_model = load_search_system()
     except Exception as e:
-        st.error(f"시스템 로딩 실패: {e}")
+        st.error(f"시스템 로딩 중 오류 발생: {e}")
         st.stop()
 
-# [핵심 수정] LLM 초기화 시에도 API 키 직접 전달
+# [수정 3] LLM에도 API Key 직접 주입
 llm_text = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash", 
-    temperature=0, 
+    temperature=0,
     google_api_key=GOOGLE_API_KEY
 )
 llm_vision = ChatGoogleGenerativeAI(
     model="gemini-1.5-flash", 
-    temperature=0, 
+    temperature=0,
     google_api_key=GOOGLE_API_KEY
 )
 
@@ -202,7 +209,7 @@ rag_chain = (
 # ==========================================================
 st.title("🏗️ 건설 CM 전문 AI (도면 + 법규)")
 
-# --- [A] 사이드바: PDF 업로드 및 상태 관리 ---
+# --- [A] 사이드바 ---
 if "last_processed_file" not in st.session_state:
     st.session_state.last_processed_file = None
 if "analysis_result" not in st.session_state:
@@ -217,9 +224,8 @@ with st.sidebar:
     
     if uploaded_files:
         target_file = uploaded_files[0]
-        # 파일이 새로 바뀌었는지 확인
         if st.session_state.last_processed_file != target_file.name:
-             st.session_state.analysis_result = None # 결과 초기화
+             st.session_state.analysis_result = None 
              
         st.write(f"📄 파일: **{target_file.name}**")
         
@@ -230,7 +236,8 @@ with st.sidebar:
             try:
                 images = convert_from_path(tmp_path, poppler_path=POPPLER_PATH, first_page=1, last_page=1)
                 if images:
-                    st.image(images[0], caption="검토 대상 도면", use_container_width=True)
+                    # [수정 4] use_container_width 경고 해결 (width="stretch" 사용)
+                    st.image(images[0], caption="검토 대상 도면", width="stretch")
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_img:
                         images[0].save(tmp_img.name, "JPEG")
                         with open(tmp_img.name, "rb") as f:
@@ -240,14 +247,11 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"오류: {e}")
 
-# --- [B] 자동 심층 분석 트리거 ---
+# --- [B] 자동 분석 ---
 if current_image_base64 and st.session_state.analysis_result is None:
     target_file_name = uploaded_files[0].name
-    
-    # 1. 자동 분석 시작
     with st.status(f"🚀 '{target_file_name}' 도면 자동 심층 분석 중...", expanded=True) as status:
         st.write("🔧 도면의 주요 공간 및 법규 검토 항목 식별 중...")
-        # 자동 질문 생성
         auto_query = "건축 도면의 주요 치수(복도, 계단, 거실 등)와 소방/피난 설비가 건축 법규에 적합한지 포괄적으로 검토해줘."
         
         st.write("📚 관련 법규(복도, 계단, 소방 등) 검색 및 매핑 중...")
@@ -256,19 +260,15 @@ if current_image_base64 and st.session_state.analysis_result is None:
         st.write("👀 Vision AI가 도면 정밀 계측 및 법규 대조 수행 중...")
         vision_result = analyze_drawing_deep(current_image_base64, auto_query, retrieved_docs)
         
-        # 결과 저장
         final_report = f"### 🏗️ 도면 자동 심층 분석 결과\n**분석 대상:** {target_file_name}\n\n{vision_result}\n\n---\n**[참고한 법규]**\n" + "\n".join([f"- {d.metadata.get('source')} ({d.metadata.get('article')})" for d in retrieved_docs])
-        
         st.session_state.analysis_result = final_report
         st.session_state.last_processed_file = target_file_name
-        
         status.update(label="✅ 분석 완료! 아래 결과를 확인하세요.", state="complete", expanded=False)
 
-# --- [C] 결과 표시 및 채팅 인터페이스 ---
+# --- [C] 결과 표시 ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 자동 분석 결과가 있으면 채팅창에 가장 먼저 박제
 if st.session_state.analysis_result:
     if not st.session_state.messages or st.session_state.messages[-1]["content"] != st.session_state.analysis_result:
         st.session_state.messages.append({"role": "assistant", "content": st.session_state.analysis_result})
@@ -277,7 +277,7 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# --- [D] 추가 질문 입력 ---
+# --- [D] 추가 질문 ---
 if prompt := st.chat_input("추가 질문이 있으신가요? (예: 계단 치수만 다시 확인해줘)"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -291,11 +291,9 @@ if prompt := st.chat_input("추가 질문이 있으신가요? (예: 계단 치�
                 st.write("👀 도면 재확인...")
                 vision_res = analyze_drawing_deep(current_image_base64, prompt, retrieved_docs)
                 status.update(label="✅ 답변 완료", state="complete")
-            
             final_res = f"{vision_res}\n\n[참고 법규]: " + ", ".join([d.metadata.get('article') for d in retrieved_docs])
             st.markdown(final_res)
             st.session_state.messages.append({"role": "assistant", "content": final_res})
-        
         else:
             corrected = spacing_chain.invoke({"question": prompt})
             response = rag_chain.invoke(corrected)
