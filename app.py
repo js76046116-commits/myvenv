@@ -22,22 +22,21 @@ from langchain_core.messages import HumanMessage
 # ==========================================================
 st.set_page_config(page_title="건설 CM AI 통합 솔루션", page_icon="🏗️", layout="wide")
 
-# 1. API 키 설정 (Secrets 사용)
-if "GOOGLE_API_KEY" not in os.environ:
-    if "GOOGLE_API_KEY" in st.secrets:
-        os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
-    else:
-        # 로컬 테스트용 (필요시 주석 해제)
-        # os.environ["GOOGLE_API_KEY"] = "YOUR_KEY_HERE"
-        pass
+# 1. API 키 가져오기 (가장 안전한 방법)
+# Secrets에서 가져오되, 없으면 환경변수 확인, 그래도 없으면 에러 처리
+if "GOOGLE_API_KEY" in st.secrets:
+    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+elif "GOOGLE_API_KEY" in os.environ:
+    GOOGLE_API_KEY = os.environ["GOOGLE_API_KEY"]
+else:
+    st.error("🚨 치명적 오류: Google API Key를 찾을 수 없습니다. Streamlit Secrets 설정을 확인하세요.")
+    st.stop()
 
 # 2. Poppler 경로 (자동 감지)
 system_name = platform.system()
 if system_name == "Windows":
-    # [사용자 로컬 경로]
     POPPLER_PATH = r"C:\Users\owner\myvenv\Release-25.12.0-0\poppler-25.12.0\Library\bin"
 else:
-    # [Streamlit Cloud 서버용]
     POPPLER_PATH = None 
 
 # 3. 데이터 경로
@@ -93,7 +92,11 @@ def load_search_system():
     with open(JSON_DATA_PATH, 'r', encoding='utf-8') as f:
         RAW_DATA = json.load(f)
 
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+    # [핵심 수정] API 키를 직접 전달합니다.
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/text-embedding-004", 
+        google_api_key=GOOGLE_API_KEY
+    )
     
     if not os.path.exists(DB_PATH_1) or not os.path.exists(DB_PATH_2):
         st.error("❌ DB 폴더가 없습니다.")
@@ -121,10 +124,23 @@ def load_search_system():
     return hybrid_retriever, reranker
 
 with st.spinner("🚀 AI 통합 엔진(Text+Vision) 시동 중..."):
-    hybrid_retriever, reranker_model = load_search_system()
+    try:
+        hybrid_retriever, reranker_model = load_search_system()
+    except Exception as e:
+        st.error(f"시스템 로딩 실패: {e}")
+        st.stop()
 
-llm_text = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
-llm_vision = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+# [핵심 수정] LLM 초기화 시에도 API 키 직접 전달
+llm_text = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash", 
+    temperature=0, 
+    google_api_key=GOOGLE_API_KEY
+)
+llm_vision = ChatGoogleGenerativeAI(
+    model="gemini-1.5-flash", 
+    temperature=0, 
+    google_api_key=GOOGLE_API_KEY
+)
 
 # ==========================================================
 # [2] 로직 체인
@@ -224,18 +240,18 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"오류: {e}")
 
-# --- [B] 자동 심층 분석 트리거 (채팅창 밖으로 이동) ---
+# --- [B] 자동 심층 분석 트리거 ---
 if current_image_base64 and st.session_state.analysis_result is None:
     target_file_name = uploaded_files[0].name
     
     # 1. 자동 분석 시작
     with st.status(f"🚀 '{target_file_name}' 도면 자동 심층 분석 중...", expanded=True) as status:
         st.write("🔧 도면의 주요 공간 및 법규 검토 항목 식별 중...")
-        # 자동 질문 생성 (사용자가 입력 안 해도 AI가 스스로 질문)
+        # 자동 질문 생성
         auto_query = "건축 도면의 주요 치수(복도, 계단, 거실 등)와 소방/피난 설비가 건축 법규에 적합한지 포괄적으로 검토해줘."
         
         st.write("📚 관련 법규(복도, 계단, 소방 등) 검색 및 매핑 중...")
-        retrieved_docs = retrieve_and_rerank(auto_query, top_k=7) # 좀 더 많이 검색
+        retrieved_docs = retrieve_and_rerank(auto_query, top_k=7) 
         
         st.write("👀 Vision AI가 도면 정밀 계측 및 법규 대조 수행 중...")
         vision_result = analyze_drawing_deep(current_image_base64, auto_query, retrieved_docs)
@@ -249,17 +265,14 @@ if current_image_base64 and st.session_state.analysis_result is None:
         status.update(label="✅ 분석 완료! 아래 결과를 확인하세요.", state="complete", expanded=False)
 
 # --- [C] 결과 표시 및 채팅 인터페이스 ---
-# 1. 채팅 기록 표시
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # 자동 분석 결과가 있으면 채팅창에 가장 먼저 박제
 if st.session_state.analysis_result:
-    # 중복 표시 방지 (이미 메시지에 있으면 패스)
     if not st.session_state.messages or st.session_state.messages[-1]["content"] != st.session_state.analysis_result:
         st.session_state.messages.append({"role": "assistant", "content": st.session_state.analysis_result})
 
-# 채팅창 그리기
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -271,7 +284,6 @@ if prompt := st.chat_input("추가 질문이 있으신가요? (예: 계단 치�
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        # 도면이 있는 상태에서의 질문
         if current_image_base64:
             with st.status("🔍 추가 질의 분석 중...", expanded=True) as status:
                 st.write("📚 관련 법규 재검색...")
@@ -284,7 +296,6 @@ if prompt := st.chat_input("추가 질문이 있으신가요? (예: 계단 치�
             st.markdown(final_res)
             st.session_state.messages.append({"role": "assistant", "content": final_res})
         
-        # 도면 없는 일반 질문
         else:
             corrected = spacing_chain.invoke({"question": prompt})
             response = rag_chain.invoke(corrected)
