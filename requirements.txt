@@ -6,4 +6,4 @@ sentence-transformers
 chromadb
 rank_bm25
 pdf2image
-pypdf
+pypdf 
