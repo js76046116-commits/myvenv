@@ -6,3 +6,4 @@ sentence-transformers
 chromadb
 tqdm
 rank_bm25
+pdf2image
