@@ -38,10 +38,12 @@ os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 # 2. Poppler 경로 (Windows 환경 대응)
 system_name = platform.system()
 if system_name == "Windows":
-    # 사용자의 로컬 환경 경로 (환경에 맞게 수정 필요)
-    POPPLER_PATH = r"C:\Users\owner\myvenv\Release-25.12.0-0\poppler-25.12.0\Library\bin"
-else:
+    # 로컬(내 컴퓨터)에서 돌릴 때만 경로 지정 (본인 경로로 수정 필요)
+    # 잘 모르겠으면 일단 None으로 두세요. (환경변수에 있다면 작동함)
     POPPLER_PATH = None 
+else:
+    # Streamlit Cloud 등 서버(Linux)에서는 보통 경로 지정 불필요 (패키지로 설치됨)
+    POPPLER_PATH = None
 
 # 3. 데이터 경로
 DB_PATH_1 = "./chroma_db_part1"
